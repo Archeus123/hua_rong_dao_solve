@@ -1,4 +1,9 @@
-use std::{collections::HashMap, rc::Rc};
+#![feature(hash_set_entry)]
+
+use std::{
+    collections::{HashSet, VecDeque},
+    rc::Rc,
+};
 
 #[cfg(test)]
 mod level2;
@@ -18,8 +23,7 @@ fn main() -> anyhow::Result<()> {
     pppp
     "#;
     let state = parse_state(state)?;
-    let hrd = HRD::new(&state)?;
-    let ret = hrd.solve(1024)?;
+    let ret = hrd_solve(&state, 1024)?;
     let steps = step_messages(&ret)?;
     log::info!("{} steps", steps.len());
     for e in steps {
@@ -30,9 +34,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn step_messages(node: &Node) -> anyhow::Result<Vec<String>> {
-    anyhow::ensure!(node.len > 0, "node is last, no message");
+    anyhow::ensure!(node.parent.is_some(), "node is last, no message");
 
-    let mut steps: Vec<String> = Vec::with_capacity(node.len as usize);
+    let mut steps: Vec<String> = Vec::new();
     let mut current_node = node;
     let mut current_game = Game::new_unchecked(&current_node.val);
 
@@ -50,8 +54,7 @@ fn step_messages(node: &Node) -> anyhow::Result<Vec<String>> {
 #[cfg(test)]
 fn show_solve(state: &str, limit: usize) {
     let state = log_guard!(parse_state(state));
-    let hrd = log_guard!(HRD::new(&state));
-    let ret = log_guard!(hrd.solve(limit));
+    let ret = log_guard!(hrd_solve(&state, limit));
     let steps = log_guard!(step_messages(&ret));
     log::info!("{} steps", steps.len());
     for e in steps {
@@ -61,12 +64,12 @@ fn show_solve(state: &str, limit: usize) {
 
 fn parse_state(state: &str) -> anyhow::Result<NodeValue> {
     let mut blocks: NodeValue = Default::default();
-    let mut row = 0;
-    let mut col = 0;
+    let mut x = 0;
+    let mut y = 0;
     for line in state.lines().map(|e| e.trim()).filter(|e| !e.is_empty()) {
-        col = 0;
+        x = 0;
         for c in line.chars() {
-            blocks[row][col] = match c {
+            let val = match c {
                 'c' => Some(BlockType::CaoCao),
                 'h' => Some(BlockType::Horizontal),
                 'v' => Some(BlockType::Vertical),
@@ -74,11 +77,12 @@ fn parse_state(state: &str) -> anyhow::Result<NodeValue> {
                 'x' => None,
                 _ => anyhow::bail!("unknown token {}", c),
             };
-            col += 1;
+            blocks.set(x, y, val);
+            x += 1;
         }
-        row += 1;
+        y += 1;
     }
-    anyhow::ensure!(row == HEIGHT && col == WIDTH, "size error {}x{}", row, col);
+    anyhow::ensure!(y == HEIGHT && x == WIDTH, "size error {}x{}", y, x);
 
     return Ok(blocks);
 }
@@ -101,20 +105,28 @@ struct Block {
 const WIDTH: usize = 4;
 const HEIGHT: usize = 5;
 
-type NodeValue = [[Option<BlockType>; WIDTH]; HEIGHT];
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Default)]
+struct NodeValue([[Option<BlockType>; WIDTH]; HEIGHT]);
+
+impl NodeValue {
+    fn is_finish(&self) -> bool {
+        self.0[HEIGHT - 1][1] == Some(BlockType::CaoCao)
+            && self.0[HEIGHT - 1][2] == Some(BlockType::CaoCao)
+    }
+
+    fn set(&mut self, x: usize, y: usize, val: Option<BlockType>) {
+        self.0[y][x] = val
+    }
+
+    fn get(&self, x: usize, y: usize) -> Option<BlockType> {
+        self.0[y][x]
+    }
+}
 
 #[derive(Debug)]
 struct Node {
     val: NodeValue,
     parent: Option<Rc<Node>>,
-    len: u32,
-}
-
-impl Node {
-    fn is_finish(&self) -> bool {
-        self.val[HEIGHT - 1][1] == Some(BlockType::CaoCao)
-            && self.val[HEIGHT - 1][2] == Some(BlockType::CaoCao)
-    }
 }
 
 struct Game {
@@ -140,7 +152,7 @@ impl Game {
 
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
-                match state[y][x] {
+                match state.get(x, y) {
                     Some(BlockType::CaoCao) => {
                         if visited[y][x] == false {
                             blocks[block_idx] = Block {
@@ -209,7 +221,7 @@ impl Game {
         let mut empty_cell = Vec::with_capacity(2);
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
-                match state[y][x] {
+                match state.get(x, y) {
                     Some(BlockType::CaoCao) => {
                         if visited[y][x] == false {
                             anyhow::ensure!(visited[y][x + 1] == false);
@@ -294,40 +306,40 @@ impl Game {
                     //上移
                     if y >= 1 && self.empty_cell == [(x, y - 1), (x + 1, y - 1)] {
                         let mut node = self.state.clone();
-                        node[y - 1][x] = Some(e.ty);
-                        node[y - 1][x + 1] = Some(e.ty);
-                        node[y + 1][x] = None;
-                        node[y + 1][x + 1] = None;
+                        node.set(x, y - 1, Some(e.ty));
+                        node.set(x + 1, y - 1, Some(e.ty));
+                        node.set(x, y + 1, None);
+                        node.set(x + 1, y + 1, None);
                         ret.push(node);
                     }
 
                     //下移
                     if y < HEIGHT - 2 && self.empty_cell == [(x, y + 2), (x + 1, y + 2)] {
                         let mut node = self.state.clone();
-                        node[y + 2][x] = Some(e.ty);
-                        node[y + 2][x + 1] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y][x + 1] = None;
+                        node.set(x, y + 2, Some(e.ty));
+                        node.set(x + 1, y + 2, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x + 1, y, None);
                         ret.push(node);
                     }
 
                     //左移
                     if x >= 1 && self.empty_cell == [(x - 1, y), (x - 1, y + 1)] {
                         let mut node = self.state.clone();
-                        node[y][x - 1] = Some(e.ty);
-                        node[y + 1][x - 1] = Some(e.ty);
-                        node[y][x + 1] = None;
-                        node[y + 1][x + 1] = None;
+                        node.set(x - 1, y, Some(e.ty));
+                        node.set(x - 1, y + 1, Some(e.ty));
+                        node.set(x + 1, y, None);
+                        node.set(x + 1, y + 1, None);
                         ret.push(node);
                     }
 
                     //右移
                     if x < WIDTH - 2 && self.empty_cell == [(x + 2, y), (x + 2, y + 1)] {
                         let mut node = self.state.clone();
-                        node[y][x + 2] = Some(e.ty);
-                        node[y + 1][x + 2] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y + 1][x] = None;
+                        node.set(x + 2, y, Some(e.ty));
+                        node.set(x + 2, y + 1, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x, y + 1, None);
                         ret.push(node);
                     }
                 }
@@ -335,56 +347,56 @@ impl Game {
                     //上移
                     if y >= 1 && self.empty_cell == [(x, y - 1), (x + 1, y - 1)] {
                         let mut node = self.state.clone();
-                        node[y - 1][x] = Some(e.ty);
-                        node[y - 1][x + 1] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y][x + 1] = None;
+                        node.set(x, y - 1, Some(e.ty));
+                        node.set(x + 1, y - 1, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x + 1, y, None);
                         ret.push(node);
                     }
 
                     //下移
                     if y < HEIGHT - 1 && self.empty_cell == [(x, y + 1), (x + 1, y + 1)] {
                         let mut node = self.state.clone();
-                        node[y + 1][x] = Some(e.ty);
-                        node[y + 1][x + 1] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y][x + 1] = None;
+                        node.set(x, y + 1, Some(e.ty));
+                        node.set(x + 1, y + 1, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x + 1, y, None);
                         ret.push(node);
                     }
 
                     //左移一格
                     if x >= 1 && self.empty_cell.contains(&(x - 1, y)) {
                         let mut node = self.state.clone();
-                        node[y][x - 1] = Some(e.ty);
-                        node[y][x + 1] = None;
+                        node.set(x - 1, y, Some(e.ty));
+                        node.set(x + 1, y, None);
                         ret.push(node);
                     }
 
                     //左移二格
                     if x >= 2 && self.empty_cell == [(x - 2, y), (x - 1, y)] {
                         let mut node = self.state.clone();
-                        node[y][x - 2] = Some(e.ty);
-                        node[y][x - 1] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y][x + 1] = None;
+                        node.set(x - 2, y, Some(e.ty));
+                        node.set(x - 1, y, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x + 1, y, None);
                         ret.push(node);
                     }
 
                     //右移一格
                     if x < WIDTH - 2 && self.empty_cell.contains(&(x + 2, y)) {
                         let mut node = self.state.clone();
-                        node[y][x + 2] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x + 2, y, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
 
                     //右移二格
                     if x < WIDTH - 3 && self.empty_cell == [(x + 2, y), (x + 3, y)] {
                         let mut node = self.state.clone();
-                        node[y][x + 2] = Some(e.ty);
-                        node[y][x + 3] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y][x + 1] = None;
+                        node.set(x + 2, y, Some(e.ty));
+                        node.set(x + 3, y, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x + 1, y, None);
                         ret.push(node);
                     }
                 }
@@ -392,56 +404,56 @@ impl Game {
                     //上移一格
                     if y >= 1 && self.empty_cell.contains(&(x, y - 1)) {
                         let mut node = self.state.clone();
-                        node[y - 1][x] = Some(e.ty);
-                        node[y + 1][x] = None;
+                        node.set(x, y - 1, Some(e.ty));
+                        node.set(x, y + 1, None);
                         ret.push(node);
                     }
 
                     //上移二格
                     if y >= 2 && self.empty_cell == [(x, y - 2), (x, y - 1)] {
                         let mut node = self.state.clone();
-                        node[y - 2][x] = Some(e.ty);
-                        node[y - 1][x] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y + 1][x] = None;
+                        node.set(x, y - 2, Some(e.ty));
+                        node.set(x, y - 1, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x, y + 1, None);
                         ret.push(node);
                     }
 
                     //下移一格
                     if y < HEIGHT - 2 && self.empty_cell.contains(&(x, y + 2)) {
                         let mut node = self.state.clone();
-                        node[y + 2][x] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x, y + 2, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
 
                     //下移二格
                     if y < HEIGHT - 3 && self.empty_cell == [(x, y + 2), (x, y + 3)] {
                         let mut node = self.state.clone();
-                        node[y + 2][x] = Some(e.ty);
-                        node[y + 3][x] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y + 1][x] = None;
+                        node.set(x, y + 2, Some(e.ty));
+                        node.set(x, y + 3, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x, y + 1, None);
                         ret.push(node);
                     }
 
                     //左移
                     if x >= 1 && self.empty_cell == [(x - 1, y), (x - 1, y + 1)] {
                         let mut node = self.state.clone();
-                        node[y][x - 1] = Some(e.ty);
-                        node[y + 1][x - 1] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y + 1][x] = None;
+                        node.set(x - 1, y, Some(e.ty));
+                        node.set(x - 1, y + 1, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x, y + 1, None);
                         ret.push(node);
                     }
 
                     //右移
                     if x < WIDTH - 1 && self.empty_cell == [(x + 1, y), (x + 1, y + 1)] {
                         let mut node = self.state.clone();
-                        node[y][x + 1] = Some(e.ty);
-                        node[y + 1][x + 1] = Some(e.ty);
-                        node[y][x] = None;
-                        node[y + 1][x] = None;
+                        node.set(x + 1, y, Some(e.ty));
+                        node.set(x + 1, y + 1, Some(e.ty));
+                        node.set(x, y, None);
+                        node.set(x, y + 1, None);
                         ret.push(node);
                     }
                 }
@@ -449,64 +461,64 @@ impl Game {
                     //上移一格
                     if y >= 1 && self.empty_cell.contains(&(x, y - 1)) {
                         let mut node = self.state.clone();
-                        node[y - 1][x] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x, y - 1, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
 
                     //上移二格
                     if y >= 2 && self.empty_cell == [(x, y - 2), (x, y - 1)] {
                         let mut node = self.state.clone();
-                        node[y - 2][x] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x, y - 2, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
 
                     //下移一格
                     if y < HEIGHT - 1 && self.empty_cell.contains(&(x, y + 1)) {
                         let mut node = self.state.clone();
-                        node[y + 1][x] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x, y + 1, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
 
                     //下移二格
                     if y < HEIGHT - 2 && self.empty_cell == [(x, y + 1), (x, y + 2)] {
                         let mut node = self.state.clone();
-                        node[y + 2][x] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x, y + 2, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
 
                     //左移一格
                     if x >= 1 && self.empty_cell.contains(&(x - 1, y)) {
                         let mut node = self.state.clone();
-                        node[y][x - 1] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x - 1, y, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
 
                     //左移二格
                     if x >= 2 && self.empty_cell == [(x - 2, y), (x - 1, y)] {
                         let mut node = self.state.clone();
-                        node[y][x - 2] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x - 2, y, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
 
                     //右移一格
                     if x < WIDTH - 1 && self.empty_cell.contains(&(x + 1, y)) {
                         let mut node = self.state.clone();
-                        node[y][x + 1] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x + 1, y, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
 
                     //右移二格
                     if x < WIDTH - 2 && self.empty_cell == [(x + 1, y), (x + 2, y)] {
                         let mut node = self.state.clone();
-                        node[y][x + 2] = Some(e.ty);
-                        node[y][x] = None;
+                        node.set(x + 2, y, Some(e.ty));
+                        node.set(x, y, None);
                         ret.push(node);
                     }
                 }
@@ -560,71 +572,54 @@ impl Game {
     }
 }
 
-struct HRD {
-    open_set: HashMap<NodeValue, Rc<Node>>,
-    close_set: HashMap<NodeValue, Rc<Node>>,
-}
-
-impl HRD {
-    fn new(state: &NodeValue) -> anyhow::Result<Self> {
-        let start = Game::new(state)?;
-        let mut open_set = HashMap::new();
-        open_set.insert(
-            start.state.clone(),
-            Rc::new(Node {
-                val: start.state,
-                parent: None,
-                len: 0,
-            }),
-        );
-        Ok(Self {
-            open_set,
-            close_set: Default::default(),
-        })
+fn hrd_solve(state: &NodeValue, limit: usize) -> anyhow::Result<Node> {
+    let game = Game::new(state)?;
+    if game.state.is_finish() {
+        return Ok(Node {
+            val: game.state.clone(),
+            parent: None,
+        });
     }
 
-    fn solve(mut self, limit: usize) -> anyhow::Result<Node> {
-        let mut next_nodes: Vec<NodeValue> = Vec::with_capacity(16);
-        loop {
-            let node = self
-                .open_set
-                .values()
-                .min_by_key(|e| e.len)
-                .ok_or_else(|| anyhow::anyhow!("can't find solve"))?;
+    let mut set = HashSet::new();
+    let mut list = VecDeque::new();
 
-            let node = Rc::clone(node);
-            if node.is_finish() {
-                self.open_set.clear();
-                self.close_set.clear();
-                return Ok(Rc::try_unwrap(node).unwrap());
+    set.insert(game.state.clone());
+    list.push_back(Rc::new(Node {
+        val: game.state,
+        parent: None,
+    }));
+
+    let mut next_nodes: Vec<NodeValue> = Vec::new();
+
+    loop {
+        let node = list
+            .pop_front()
+            .ok_or_else(|| anyhow::anyhow!("can't find solve"))?;
+
+        let game = Game::new_unchecked(&node.val);
+        game.next_nodes(&mut next_nodes);
+
+        for e in next_nodes.drain(..) {
+            if e.is_finish() {
+                return Ok(Node {
+                    val: e,
+                    parent: Some(node),
+                });
             }
-
-            if self.open_set.len() + self.close_set.len() >= limit {
-                anyhow::bail!("node size exceed {}", limit);
+            let entry = set.entry(e);
+            if let std::collections::hash_set::Entry::Occupied(_) = entry {
+                continue;
             }
+            list.push_back(Rc::new(Node {
+                val: entry.get().clone(),
+                parent: Some(Rc::clone(&node)),
+            }));
+            entry.insert();
+        }
 
-            self.open_set.remove(&node.val);
-            self.close_set.insert(node.val.clone(), Rc::clone(&node));
-
-            let game = Game::new_unchecked(&node.val);
-            game.next_nodes(&mut next_nodes);
-
-            for e in next_nodes.drain(..) {
-                if self.close_set.contains_key(&e) {
-                    continue;
-                }
-                if self.open_set.contains_key(&e) {
-                    continue;
-                }
-                self.open_set.insert(
-                    e.clone(),
-                    Rc::new(Node {
-                        val: e,
-                        parent: Some(Rc::clone(&node)),
-                        len: node.len + 1,
-                    }),
-                );
-            }
+        if set.len() >= limit {
+            anyhow::bail!("node size exceed {}", limit);
         }
     }
 }
